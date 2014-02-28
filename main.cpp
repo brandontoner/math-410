@@ -53,17 +53,17 @@ double standard_deviation(double values[], int n) {
 
 class customer {
   private:
-    static const double mean_time_per_item  = 0.1;
-    static const double stdev_time_per_item = 0.01;
-    static const double mean_item_count     = 25;
-    static const double stdev_item_count    = 10;
+    static const double mean_time_per_item;
+    static const double stdev_time_per_item;
+    static const double mean_item_count;
+    static const double stdev_item_count;
 
     double my_time_left;
 
   public:
     const int items_count;
 
-    customer(int items, double t) : items_count(items), my_time_left(t) { }
+    customer(int items, double t) : my_time_left(t), items_count(items) { }
 
     void decrease_time_left(double t) {
         my_time_left -= t;
@@ -74,20 +74,30 @@ class customer {
     }
 
     static customer random_customer() {
-        int items;
+        int    items;
+        double time;
+        // keep generating random numbers of items until > 0
         do {
             items = static_cast<int>(rand_normal(mean_item_count,
                                                  stdev_item_count));
         } while (items <= 0);
 
-        // Distribution of a sum of normally distributed values is normal with
-        // mean n * mu and standard deviation sigma * sqrt(n)
-        double time = rand_normal(mean_time_per_item * items,
-                                  stdev_time_per_item * sqrt(items));
+        // keep generating random t ime until > 0
+        do {
+            // Distribution of a sum of normally distributed values is normal
+            // with mean n * mu and standard deviation sigma * sqrt(n)
+            time = rand_normal(mean_time_per_item * items,
+                               stdev_time_per_item * sqrt(items));
+        } while (time <= 0);
 
         return customer(items, time);
     }
 };
+
+const double customer::mean_time_per_item  = 0.1;
+const double customer::stdev_time_per_item = 0.01;
+const double customer::mean_item_count     = 25;
+const double customer::stdev_item_count    = 10;
 
 class lane {
   private:
@@ -95,12 +105,13 @@ class lane {
     static int    customers_processed;
 
     deque<customer> customers;
+    double          time_left;
 
   public:
     static       int  express_limit;
            const bool is_express;
 
-    explicit lane(bool express) : is_express(express) { }
+    explicit lane(bool express) : time_left(0), is_express(express) { }
 
     int size() const {
         return customers.size();
@@ -112,6 +123,7 @@ class lane {
 
     void add(const customer& customer) {
         customers.push_back(customer);
+        time_left += customer.time_left();
     }
 
     const customer& front() const {
@@ -123,12 +135,8 @@ class lane {
     }
 
     double total_time_left() const {
-        double time = 0;
-        std::deque<customer>::const_iterator it = customers.begin();
-        for(; it != customers.end(); ++it) {
-            time += it->time_left();
-        }
-        return time;
+        return time_left;
+
     }
 
     void process(const double time) {
@@ -142,6 +150,8 @@ class lane {
             customers.pop_front();
             // First customer was processed
             customers_processed++;
+            // Decrease the amount of time the lane has left
+            time_left -= front_time_left;
             // Recursively process the rest of the time
             process(time - front_time_left);
         } else {
@@ -150,6 +160,8 @@ class lane {
             total_wait_time += customers.size() * time;
             // Decrease the front customers time left
             customers.front().decrease_time_left(time);
+            // Decrease the amount of time the lane has left
+            time_left -= time;
         }
     }
 
@@ -184,71 +196,70 @@ lane* get_best_line(lane* lanes[], int lanes_count, const customer& c) {
     return best_line;
 }
 
-static double get_average_wait_time(const int lanes_count,
-                                    const int express_lanes_count,
+static double get_average_wait_time(const int    lanes_count,
+                                    const int    express_lanes_count,
                                     const double max_time,
                                     const double mean_customers_per_minute) {
     // Reset customer count and total waiting time to zero
     lane::reset();
-        // Create lanes
-        lane* lanes[lanes_count];
+    // Create lanes
+    lane** lanes = new lane*[lanes_count];
+    for (int j = 0; j < lanes_count; ++j) {
+        lanes[j] = new lane(j < express_lanes_count);
+    }
+
+    for (double time = 0; time < max_time;) {
+        // New customer appears after a wait of "new_time"
+        double   new_time     = rand_exp(mean_customers_per_minute);
+        customer new_customer = customer::random_customer();
+
+        // All the lanes have been processing customers for "new_time"
         for (int j = 0; j < lanes_count; ++j) {
-            lanes[j] = new lane(j < express_lanes_count);
+            lanes[j]->process(new_time);
         }
+        // Get the best lane for the customer to enter
+        lane* best_lane = get_best_line(lanes, lanes_count, new_customer);
+        // Put customer in line
+        best_lane->add(new_customer);
+        // Increase the time
+        time += new_time;
+    }
 
-        for (double time = 0; time < max_time;) {
-            // New customer appears after a wait of "new_time"
-            double   new_time     = rand_exp(mean_customers_per_minute);
-            customer new_customer = customer::random_customer();
-
-            // All the lanes have been processing customers for "new_time"
-            for (int j = 0; j < lanes_count; ++j) {
-                lanes[j]->process(new_time);
-            }
-            // Get the best lane for the customer to enter
-            lane* best_lane = get_best_line(lanes, lanes_count, new_customer);
-            // Put customer in line
-            best_lane->add(new_customer);
-            // Increase the time
-            time += new_time;
-        }
-
-        // Free resources
-        for (int j = 0; j < lanes_count; ++j) {
-            delete lanes[j];
-        }
-        return lane::average_wait_time();
+    // Free resources
+    for (int j = 0; j < lanes_count; ++j) {
+        delete lanes[j];
+    }
+    delete[] lanes;
+    return lane::average_wait_time();
 }
 
 int main() {
     const double mean_customers_per_minute = 4.15;
     const int    lanes_count               = 10;
-    const int    express_lanes_count       = 1;
     const double max_time                  = 8 * 60;  // 8 hours
-    const int    iteration_count           = 5000;
-    // const int    express_limit             = 25;
+    const int    iteration_count           = 10000;
           double times[iteration_count];
 
     // Seed the random number generator;
     srand(time(NULL));
-
-    for(int exp = 0; exp < 50; ++exp) {
-        lane::set_express_limit(exp);
-        for (int i = 0; i < iteration_count; ++i) {
-            times[i] = get_average_wait_time(lanes_count, express_lanes_count,
-                                             max_time, mean_customers_per_minute);
-            // if(i % 100 == 0)
-            //    fprintf(stderr, "%f\r", 100.0 * i / iteration_count);
+    for (int expr_lanes_count = 0; expr_lanes_count < lanes_count; ++expr_lanes_count) {
+        for (int express_limit = 0; express_limit < 50; ++express_limit) {
+            lane::set_express_limit(express_limit);
+            for (int i = 0; i < iteration_count; ++i) {
+                times[i] = get_average_wait_time(lanes_count, expr_lanes_count,
+                                                 max_time, mean_customers_per_minute);
+                if(i % 100 == 0)
+                    fprintf(stderr, "%f\r", 100.0 * i / iteration_count);
+            }
+            double avg     = average(times, iteration_count);
+            double std_dev = standard_deviation(times, iteration_count, avg);
+            // Print statistics
+            printf("%-20d%-20d%-20f%-20f%-20d\n",
+                   expr_lanes_count, express_limit, avg, std_dev, iteration_count);
+            fflush(stdout);
+            // If there aren't any express lanes, changing the express lane
+            // limit won't matter, so stop after one iteration.
+            if(expr_lanes_count == 0) break;
         }
-        double avg     = average(times, iteration_count);
-        double stddev  = standard_deviation(times, iteration_count, avg);
-        printf("%d\t%d\t%f\t%f\n", express_lanes_count, exp, avg, stddev);
     }
-
-//    double avg     = average(times, iteration_count);
-//    double stddev  = standard_deviation(times, iteration_count, avg);
-//    printf("average:            %0.4f\n"
-//           "standard deviation: %0.4f\n", avg, stddev);
-//    printf("confidence interval:\n"
-//           "%0.4f %0.4f\n", avg - 2 * stddev / sqrt(iteration_count), avg + 2 * stddev / sqrt(iteration_count));
 }
